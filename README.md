@@ -3,7 +3,7 @@
 물류센터 내 EV 트럭 충전 도크(기본 10기)의 전력 스케줄링을 다중 에이전트 강화학습으로 학습하는 코드입니다.
 [MAAC (Multi-Actor-Attention-Critic)](https://arxiv.org/abs/1810.02912)을 기반으로,
 계약 전력(Grid Limit) 제약을 명시적으로 다루는 **C-MAAC (Constrained MAAC, CMDP + Lagrangian relaxation)**
-를 제안하고, Random / Heuristic / SAC 베이스라인과 비교합니다.
+를 제안하고, Random / Heuristic / SAC / MAAC 베이스라인과 비교합니다.
 
 ## 디렉토리 구조
 
@@ -12,7 +12,7 @@ EV-Charging-MAAC/
 ├── envs/ev_charging/
 │   ├── ev_charging_env.py    # EV 충전 환경 (10도크, 24시간=144 스텝)
 │   ├── price_schedule.py      # 한전 산업용(고압) 여름철 시간대별 요금
-│   └── truck_generator.py     # 트럭 도착/적재량/재실시간 생성
+│   └── truck_generator.py     # 트럭 도착/적재량
 │
 ├── algorithms/
 │   ├── attention_sac.py        # MAAC
