@@ -12,7 +12,7 @@ EV-Charging-MAAC/
 ├── envs/ev_charging/
 │   ├── ev_charging_env.py    # EV 충전 환경 (10도크, 24시간=144 스텝)
 │   ├── price_schedule.py      # 한전 산업용(고압) 여름철 시간대별 요금
-│   └── truck_generator.py     # 트럭 도착/적재량/재실시간 생성
+│   └── truck_generator.py     # 트럭 도착/적재량
 │
 ├── algorithms/
 │   ├── attention_sac.py        # MAAC
