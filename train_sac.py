@@ -1,35 +1,8 @@
 """
-train_sac.py  —  Single-Agent Discrete SAC  (EV 충전 대조군)
+Single-Agent Discrete SAC (EV 충전 베이스라인)
 
-기반 논문 : Christodoulou (2019) "Soft Actor-Critic for Discrete Action Settings"
-기반 코드 : Atari-SAC-Discrete (rltorch)
-
-논문 파일 → 본 파일 변환 내역
-────────────────────────────────────────────────────────────────
-rltorch/policy/categorical.py        → CategoricalPolicy
-  · ConvCategoricalPolicy            → Conv backbone 제거, MLP 교체
-  · 출력 헤드 1개                    → 충전기 n_agents개 독립 헤드
-
-rltorch/q_function/discrete.py       → TwinedDiscreteQNetwork
-  · TwinedDiscreteConvQNetwork       → Conv 제거, MLP 교체
-  · 출력 헤드 1개 (action_n)         → 충전기 n_agents개 독립 헤드
-
-rltorch/memory/base.py               → Memory
-  · actions shape (1,)               → (n_agents,) 정수 배열
-
-rltorch/agent/sac_discrete/base.py   → SacDiscreteAgent (일부)
-  · calc_current_q(), calc_target_q()
-  · explore(), exploit()
-
-rltorch/agent/sac_discrete/learner.py → SacDiscreteAgent (일부)
-  · calc_critic_loss(), calc_policy_loss(), calc_entropy_loss()
-  · learn()  ← Actor/Learner 단일 클래스로 통합
-
-rltorch/agent/sac_discrete/actor.py  → run()
-  · act_episode()                    → 단일 프로세스 학습 루프
-
-rltorch/agent/utils.py               → update_params() 유지
-────────────────────────────────────────────────────────────────
+Christodoulou (2019), "Soft Actor-Critic for Discrete Action Settings"의
+rltorch 레퍼런스 구현을 단일 프로세스 + n_agents 헤드 구조로 적응.
 """
 
 import argparse
@@ -48,15 +21,7 @@ from utils.misc import soft_update, hard_update
 from utils.single_wrapper import MultiToSingleWrapper
 
 
-# ─────────────────────────────────────────────────────────────
-# 유틸  [출처: rltorch/agent/utils.py  update_params()]
-# ─────────────────────────────────────────────────────────────
-
 def update_params(optim, loss, grad_clip, network=None, retain_graph=False):
-    """
-    논문 utils.py의 update_params() 그대로.
-    zero_grad → backward → clip → step 순서 보장.
-    """
     optim.zero_grad()
     loss.backward(retain_graph=retain_graph)
     if grad_clip is not None and network is not None:
@@ -64,25 +29,14 @@ def update_params(optim, loss, grad_clip, network=None, retain_graph=False):
     optim.step()
 
 
-# ─────────────────────────────────────────────────────────────
-# 1. Policy  [출처: rltorch/policy/categorical.py]
-# ─────────────────────────────────────────────────────────────
-
 class CategoricalPolicy(nn.Module):
-    """
-    논문: ConvCategoricalPolicy
-    변경: Conv backbone → MLP,  출력 헤드 1개 → n_agents개
-
-    논문의 sample() 반환 형태를 그대로 유지:
-        (actions, action_probs, log_action_probs, greedy_actions)
-    """
+    """공유 MLP + n_agents개 독립 카테고리컬 헤드."""
 
     def __init__(self, obs_dim, action_n, n_agents, hidden_dim=256):
         super().__init__()
         self.n_agents = n_agents
         self.action_n = action_n
 
-        # 논문의 Conv backbone → MLP로 교체
         self.net = nn.Sequential(
             nn.Linear(obs_dim, hidden_dim),
             nn.ReLU(),
@@ -90,48 +44,27 @@ class CategoricalPolicy(nn.Module):
             nn.ReLU(),
         )
 
-        # 논문의 단일 출력 헤드 → 충전기 수만큼 독립 헤드
         self.heads = nn.ModuleList([
             nn.Linear(hidden_dim, action_n) for _ in range(n_agents)
         ])
 
     def forward(self, states):
-        """list[n_agents] of (B, action_n) 확률 반환"""
         h = self.net(states)
         return [F.softmax(head(h), dim=1) for head in self.heads]
 
     def sample(self, states):
-        """
-        논문 categorical.py  L26~35  sample() 그대로.
-
-        논문:
-            action_probs = self.policy(state)
-            greedy_actions = torch.argmax(action_probs, dim=1, keepdim=True)
-            categorical = Categorical(action_probs)
-            actions = categorical.sample().view(-1, 1)
-            log_action_probs = torch.log(action_probs + (action_probs==0)*1e-8)
-            return actions, action_probs, log_action_probs, greedy_actions
-
-        반환:
-            actions        (B, n_agents)  정수 — 환경에 바로 전달
-            action_probs   list[n_agents] of (B, action_n)
-            log_action_probs list[n_agents] of (B, action_n)
-            greedy_actions (B, n_agents)  정수
-        """
+        """반환: (actions[B,n_agents], probs_list, log_probs_list, greedy[B,n_agents])."""
         h = self.net(states)
 
         actions_list, probs_list, log_probs_list, greedy_list = [], [], [], []
 
         for head in self.heads:
             probs = F.softmax(head(h), dim=1)
-
-            # 논문 L32~33: log(probs + eps)  — log(0) 방지
             log_probs = torch.log(probs + (probs == 0.0).float() * 1e-8)
 
-            # 논문 L29~30: Categorical 샘플링
             categorical     = Categorical(probs)
-            actions         = categorical.sample().view(-1, 1)          # (B,1)
-            greedy_actions  = torch.argmax(probs, dim=1, keepdim=True)  # (B,1)
+            actions         = categorical.sample().view(-1, 1)
+            greedy_actions  = torch.argmax(probs, dim=1, keepdim=True)
 
             actions_list.append(actions)
             probs_list.append(probs)
@@ -139,31 +72,19 @@ class CategoricalPolicy(nn.Module):
             greedy_list.append(greedy_actions)
 
         return (
-            torch.cat(actions_list, dim=1),    # (B, n_agents)
-            probs_list,                         # list[n_agents] of (B, action_n)
-            log_probs_list,                     # list[n_agents] of (B, action_n)
-            torch.cat(greedy_list,  dim=1),    # (B, n_agents)
+            torch.cat(actions_list, dim=1),
+            probs_list,
+            log_probs_list,
+            torch.cat(greedy_list,  dim=1),
         )
 
 
-# ─────────────────────────────────────────────────────────────
-# 2. Q-Network  [출처: rltorch/q_function/discrete.py]
-# ─────────────────────────────────────────────────────────────
-
 class DiscreteQNetwork(nn.Module):
-    """
-    논문: DiscreteConvQNetwork
-    변경: Conv + Dueling → MLP,  단일 헤드 → n_agents개 독립 헤드
-
-    논문의 핵심 개념 유지:
-        Q(s) → 모든 행동의 Q값 동시 출력  (이산 SAC 핵심)
-        연속 SAC처럼 Q(s,a)를 입력받지 않음
-    """
+    """공유 MLP + n_agents개 독립 Q 헤드 (Q(s)[a] 동시 출력)."""
 
     def __init__(self, obs_dim, action_n, n_agents, hidden_dim=256):
         super().__init__()
 
-        # 논문의 Conv base → MLP로 교체
         self.net = nn.Sequential(
             nn.Linear(obs_dim, hidden_dim),
             nn.ReLU(),
@@ -171,25 +92,17 @@ class DiscreteQNetwork(nn.Module):
             nn.ReLU(),
         )
 
-        # 논문의 단일 헤드 (V+A Dueling) → MLP 독립 헤드 n_agents개
         self.heads = nn.ModuleList([
             nn.Linear(hidden_dim, action_n) for _ in range(n_agents)
         ])
 
     def forward(self, states):
-        """list[n_agents] of (B, action_n) Q값 반환"""
         h = self.net(states)
         return [head(h) for head in self.heads]
 
 
 class TwinedDiscreteQNetwork(nn.Module):
-    """
-    논문: TwinedDiscreteConvQNetwork  (discrete.py  L23~35)
-    변경: 내부 Q망을 DiscreteQNetwork로 교체
-
-    논문과 동일하게 .Q1 / .Q2 속성 유지
-    → learner.py처럼 Q1, Q2 각각 독립 optimizer 적용 가능
-    """
+    """Q1, Q2 듀얼 크리틱 (각자 독립 옵티마이저 적용)."""
 
     def __init__(self, obs_dim, action_n, n_agents, hidden_dim=256):
         super().__init__()
@@ -197,34 +110,17 @@ class TwinedDiscreteQNetwork(nn.Module):
         self.Q2 = DiscreteQNetwork(obs_dim, action_n, n_agents, hidden_dim)
 
     def forward(self, states):
-        """(q1_list, q2_list) 각각 list[n_agents] of (B, action_n)"""
         return self.Q1(states), self.Q2(states)
 
 
-# ─────────────────────────────────────────────────────────────
-# 3. Memory  [출처: rltorch/memory/base.py]
-# ─────────────────────────────────────────────────────────────
-
 class Memory:
-    """
-    논문: Memory  (memory/base.py  전체)
-    변경: actions shape (1,) → (n_agents,) 정수 배열
-
-    논문과 동일한 인터페이스:
-        append(state, action, reward, next_state, done)
-        sample(batch_size) → (states, actions, rewards, next_states, dones)
-        __len__()
-    """
-
     def __init__(self, capacity, obs_dim, n_agents, device):
         self.capacity = int(capacity)
         self.device   = device
 
-        # 논문 L12~13: 원형 버퍼 포인터
         self._n = 0
         self._p = 0
 
-        # 논문 L65~69: numpy 버퍼 (actions만 shape 변경)
         self.states      = np.empty((self.capacity, obs_dim),  dtype=np.float32)
         self.actions     = np.empty((self.capacity, n_agents), dtype=np.int64)
         self.rewards     = np.empty((self.capacity, 1),        dtype=np.float32)
@@ -232,7 +128,6 @@ class Memory:
         self.dones       = np.empty((self.capacity, 1),        dtype=np.float32)
 
     def append(self, state, action, reward, next_state, done):
-        """논문 _append() L22~32 그대로"""
         self.states[self._p]      = state
         self.actions[self._p]     = action
         self.rewards[self._p]     = float(reward)
@@ -243,7 +138,6 @@ class Memory:
         self._p = (self._p + 1) % self.capacity
 
     def sample(self, batch_size):
-        """논문 _sample() L39~55 그대로 (이미지 처리 분기만 제거)"""
         indices = np.random.randint(low=0, high=self._n, size=batch_size)
 
         states      = torch.FloatTensor(self.states[indices]).to(self.device)
@@ -258,27 +152,8 @@ class Memory:
         return self._n
 
 
-# ─────────────────────────────────────────────────────────────
-# 4. Agent  [출처: base.py + learner.py + actor.py 통합]
-# ─────────────────────────────────────────────────────────────
-
 class SacDiscreteAgent:
-    """
-    논문: SacDiscreteAgent (base.py) + SacDiscreteLearner (learner.py) 통합
-    분산 처리(Actor/Learner 분리) → 단일 프로세스로 단순화
-
-    유지한 메서드명:
-        explore(), exploit()          ← base.py
-        calc_current_q()              ← base.py
-        calc_target_q()               ← base.py
-        calc_critic_loss()            ← learner.py
-        calc_policy_loss()            ← learner.py
-        calc_entropy_loss()           ← learner.py
-        learn()                       ← learner.py
-
-    추가한 메서드 (MAAC 호환):
-        prep_training(), prep_rollouts()
-    """
+    """이산 SAC (Christodoulou 2019) 단일 프로세스 구현 + n_agents 헤드."""
 
     def __init__(self, obs_dim, action_n, n_agents,
                  gamma=0.99, tau=0.005, lr=0.0003, grad_clip=5.0,
@@ -292,59 +167,37 @@ class SacDiscreteAgent:
         self.action_n  = action_n
         self.niter     = 0
 
-        # ── 네트워크 ─────────────────────────────────────────────
         self.policy        = CategoricalPolicy(obs_dim, action_n, n_agents, pol_hidden_dim)
         self.critic        = TwinedDiscreteQNetwork(obs_dim, action_n, n_agents, critic_hidden_dim)
         self.critic_target = TwinedDiscreteQNetwork(obs_dim, action_n, n_agents, critic_hidden_dim)
         hard_update(self.critic_target, self.critic)
         self.critic_target.eval()
 
-        # ── 옵티마이저  [learner.py L48~51: Q1, Q2 각각 독립] ────
         self.policy_optim = Adam(self.policy.parameters(),    lr=lr)
         self.q1_optim     = Adam(self.critic.Q1.parameters(), lr=lr)
         self.q2_optim     = Adam(self.critic.Q2.parameters(), lr=lr)
 
-        # ── 학습 가능한 온도 α  [learner.py L52~56] ──────────────
-        # 논문: target_entropy = log(n_actions) * 0.98
-        # n_agents헤드 적용: n_agents * 0.98 * log(action_n)
+        # target_entropy = n_agents · 0.98 · log(action_n)  (per-head 합산)
         self.target_entropy = n_agents * 0.98 * np.log(action_n)
         self.log_alpha      = torch.zeros(1, requires_grad=True)
         self.alpha          = self.log_alpha.exp().detach()
         self.alpha_optim    = Adam([self.log_alpha], lr=lr)
 
-        # device 추적
         self.pol_dev    = 'cpu'
         self.critic_dev = 'cpu'
 
-    # ── 행동 선택  [base.py L29~41] ─────────────────────────────
-
     def explore(self, state):
-        """논문 base.py explore() — 확률적 행동 (학습 중 탐험용)"""
         with torch.no_grad():
             actions, _, _, _ = self.policy.sample(state)
-        return actions[0].cpu().numpy()   # (n_agents,) 정수
+        return actions[0].cpu().numpy()
 
     def exploit(self, state):
-        """논문 base.py exploit() — 탐욕적 행동 (평가용)"""
         with torch.no_grad():
             _, _, _, greedy = self.policy.sample(state)
-        return greedy[0].cpu().numpy()    # (n_agents,) 정수
-
-    # ── Q 계산  [base.py L43~62] ────────────────────────────────
+        return greedy[0].cpu().numpy()
 
     def calc_current_q(self, states, actions):
-        """
-        논문 base.py L43~47 calc_current_q() — 실제 취한 행동의 Q값 추출
-
-        논문:
-            curr_q1, curr_q2 = self.critic(states)
-            curr_q1 = curr_q1.gather(1, actions.long())
-            curr_q2 = curr_q2.gather(1, actions.long())
-
-        n_agents헤드 확장:
-            충전기 i : Q_i(s).gather(1, a_i) → (B,1)
-            합산     : Σ_i Q_i(s)[a_i]       → (B,1)
-        """
+        """Σ_i Q_i(s)[a_i] (헤드별 합산)"""
         q1_list, q2_list = self.critic(states)
 
         curr_q1 = sum(
@@ -358,21 +211,7 @@ class SacDiscreteAgent:
         return curr_q1, curr_q2
 
     def calc_target_q(self, states, actions, rewards, next_states, dones):
-        """
-        논문 base.py L50~62 calc_target_q() — 이산 SAC 핵심 수식
-
-        논문:
-            next_q = torch.min(next_q1, next_q2)
-            next_q = next_action_probs * (next_q - alpha * log_next_action_probs)
-            next_q = next_q.mean(dim=1).unsqueeze(-1)   ← 논문 코드 (mean 버그)
-            target = rewards + (1-dones) * gamma * next_q
-
-        수정: .mean() → .sum()  (수학적으로 올바른 기댓값 E_a[...])
-
-        n_agents헤드 확장:
-            next_v_i = Σ_a π_i(a|s') * [min(Q1_i, Q2_i)(s',a) - α*logπ_i(a|s')]
-            next_v   = Σ_i next_v_i
-        """
+        """타겟: r + γ·(1−d)·Σ_i E_a[min(Q1_i, Q2_i) − α·log π_i(a|s')]"""
         with torch.no_grad():
             _, next_probs, next_log_probs, _ = self.policy.sample(next_states)
             next_q1_list, next_q2_list = self.critic_target(next_states)
@@ -381,19 +220,16 @@ class SacDiscreteAgent:
 
             next_v = 0.0
             for i in range(self.n_agents):
-                next_q_i = torch.min(next_q1_list[i], next_q2_list[i])  # (B, action_n)
+                next_q_i = torch.min(next_q1_list[i], next_q2_list[i])
                 next_v  += (
                     next_probs[i] * (next_q_i - alpha * next_log_probs[i])
-                ).sum(dim=1, keepdim=True)                               # (B, 1)
+                ).sum(dim=1, keepdim=True)
 
-            target_q = rewards + (1.0 - dones) * self.gamma * next_v    # (B, 1)
+            target_q = rewards + (1.0 - dones) * self.gamma * next_v
 
         return target_q
 
-    # ── 손실 계산  [learner.py L151~179] ────────────────────────
-
     def calc_critic_loss(self, batch):
-        """논문 learner.py L151~161 calc_critic_loss()"""
         states, actions, rewards, next_states, dones = batch
 
         curr_q1, curr_q2 = self.calc_current_q(states, actions)
@@ -404,15 +240,6 @@ class SacDiscreteAgent:
         return q1_loss, q2_loss
 
     def calc_policy_loss(self, batch):
-        """
-        논문 learner.py L163~173 calc_policy_loss()
-
-        논문:
-            q = alpha * log_action_probs - torch.min(q1, q2)
-            inside_term = torch.sum(action_probs * q, dim=1, keepdim=True)
-            policy_loss = inside_term.mean()
-            entropies = -torch.sum(action_probs * log_action_probs, dim=1)
-        """
         states = batch[0]
 
         _, action_probs, log_action_probs, _ = self.policy.sample(states)
@@ -426,51 +253,34 @@ class SacDiscreteAgent:
         entropies   = 0.0
 
         for i in range(self.n_agents):
-            min_q_i = torch.min(q1_list[i], q2_list[i])   # (B, action_n)
+            min_q_i = torch.min(q1_list[i], q2_list[i])
 
-            # 논문 L168~170
             q_i          = alpha * log_action_probs[i] - min_q_i
             inside_term  = (action_probs[i] * q_i).sum(dim=1, keepdim=True)
             policy_loss += inside_term.mean()
 
-            # 논문 L172~173
             entropies -= (action_probs[i] * log_action_probs[i]).sum(dim=1, keepdim=True)
 
         return policy_loss, entropies
 
     def calc_entropy_loss(self, entropies):
-        """논문 learner.py L175~179 calc_entropy_loss()"""
         entropy_loss = -(
             self.log_alpha.to(entropies.device)
             * (self.target_entropy - entropies).detach()
         ).mean()
         return entropy_loss
 
-    # ── 학습  [learner.py L105~131 learn()] ─────────────────────
-
     def learn(self, batch, logger=None):
-        """
-        논문 learner.py L105~131 learn() 구조 그대로.
-
-        논문 순서:
-            1. calc_critic_loss  → update Q1, Q2
-            2. calc_policy_loss  → update policy
-            3. calc_entropy_loss → update alpha
-            4. soft_update critic_target
-        """
-        # 1. Critic 업데이트  [learner.py L113~114, L118~123]
         q1_loss, q2_loss = self.calc_critic_loss(batch)
         update_params(self.q1_optim, q1_loss, self.grad_clip,
                       self.critic.Q1, retain_graph=True)
         update_params(self.q2_optim, q2_loss, self.grad_clip,
                       self.critic.Q2)
 
-        # 2. Policy 업데이트  [learner.py L115, L119]
         policy_loss, entropies = self.calc_policy_loss(batch)
         update_params(self.policy_optim, policy_loss, self.grad_clip,
                       self.policy)
 
-        # 3. Alpha 업데이트  [learner.py L116, L120]
         entropy_loss = self.calc_entropy_loss(entropies)
         update_params(self.alpha_optim, entropy_loss, grad_clip=None)
         self.alpha = self.log_alpha.exp().detach().cpu()
@@ -485,13 +295,8 @@ class SacDiscreteAgent:
 
         self.niter += 1
 
-    # ── 타깃 업데이트  [learner.py L191: soft_update] ───────────
-
     def update_all_targets(self):
-        """논문 learner.py interval() → soft_update 호출"""
         soft_update(self.critic_target, self.critic, self.tau)
-
-    # ── 디바이스 관리  (MAAC attention_sac.py 패턴) ──────────────
 
     def prep_training(self, device='gpu'):
         fn = (lambda x: x.cuda()) if device == 'gpu' else (lambda x: x.cpu())
@@ -512,8 +317,6 @@ class SacDiscreteAgent:
         if self.pol_dev != device:
             self.policy  = fn(self.policy)
             self.pol_dev = device
-
-    # ── 저장 / 로드 ──────────────────────────────────────────────
 
     def save(self, filename):
         self.prep_training(device='cpu')
@@ -554,16 +357,7 @@ class SacDiscreteAgent:
         return instance
 
 
-# ─────────────────────────────────────────────────────────────
-# 5. 학습 루프  [출처: actor.py act_episode() + main.py]
-# ─────────────────────────────────────────────────────────────
-
 def run(config):
-    """
-    논문 actor.py act_episode() 구조를 단일 프로세스로 단순화.
-    디렉토리 관리·로깅은 main.py 구조 그대로.
-    """
-    # 디렉토리 관리 (main.py 그대로)
     model_dir = Path('./models') / config.env_id / config.model_name
     if not model_dir.exists():
         run_num = 1
@@ -581,7 +375,7 @@ def run(config):
     torch.manual_seed(seed)
     np.random.seed(seed)
 
-    # 환경 (MA 환경 → Single-Agent 래핑)
+    # 멀티에이전트 환경 → 단일 에이전트 인터페이스로 래핑
     ma_env = make_env(config.env_id, discrete_action=True,
                       arrival_mode=config.arrival_mode)
     ma_env.seed(seed)
@@ -609,26 +403,20 @@ def run(config):
     t_start    = _time.time()
 
     for ep_i in range(config.n_episodes):
-
-        # 논문 actor.py act_episode() L88~89
         state  = env.reset()
         ep_rew = 0.0
         model.prep_rollouts(device='cpu')
 
         for et_i in range(config.episode_length):
-
-            # 논문 actor.py L23~26: start_steps 동안 랜덤 탐험
             if t < config.start_steps:
                 action = env.action_space.sample()
             else:
                 obs_t  = torch.FloatTensor(state).unsqueeze(0)
-                action = model.explore(obs_t)          # (n_agents,) 정수
+                action = model.explore(obs_t)
 
-            # 논문 actor.py L93~94
             next_state, reward, done, _ = env.step(action)
             ep_rew += reward
 
-            # 논문 actor.py L115~121: 메모리에 저장
             memory.append(state, action, reward, next_state, done)
             state = next_state
             t    += 1
@@ -636,17 +424,16 @@ def run(config):
             if done:
                 state = env.reset()
 
-            # 업데이트 (main.py 타이밍 그대로)
             if len(memory) >= config.batch_size and t % config.steps_per_update == 0:
                 model.prep_training(device='gpu' if config.use_gpu else 'cpu')
                 for _ in range(config.num_updates):
                     batch = memory.sample(config.batch_size)
-                    model.learn(batch, logger=logger)          # learner.py learn()
-                    model.update_all_targets()                 # learner.py interval()
+                    model.learn(batch, logger=logger)
+                    model.update_all_targets()
                 model.prep_rollouts(device='cpu')
 
         logger.add_scalar('all/mean_episode_reward',  ep_rew, ep_i)
-        logger.add_scalar('all/mean_episode_rewards', ep_rew, ep_i)  # visualize.py 호환
+        logger.add_scalar('all/mean_episode_rewards', ep_rew, ep_i)
 
         if ep_rew > best_rew:
             best_rew = ep_rew
@@ -682,13 +469,9 @@ def run(config):
     logger.close()
 
 
-# ─────────────────────────────────────────────────────────────
-# 실행 인자
-# ─────────────────────────────────────────────────────────────
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='Discrete SAC — EV Charging (Christodoulou 2019 기반)')
+        description='Discrete SAC — EV Charging')
     parser.add_argument('--env_id',        default='ev_charging', type=str)
     parser.add_argument('--model_name',    default='sac_model',   type=str)
     parser.add_argument('--buffer_length',     default=int(1e6), type=int)

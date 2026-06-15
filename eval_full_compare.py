@@ -1,34 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
-eval_full_compare.py — 종합 비교 평가 (그림 각각 1개씩 저장)
-
-생성 그래프:
-  0_training_curves/    : SAC / MAAC / C-MAAC 학습 곡선 (TensorBoard 로그 기반, 1장)
-  1_baseline_s1/        : Random/Heuristic/SAC/MAAC/C-MAAC, S1 기준
-                           - Total Penalty, 6개 페널티 항목, Overload Steps,
-                             Forced Departures  →  각각 별도 PNG (총 9장)
-  2_sac_vs_maac_s1/      : SAC vs MAAC, S1
-                           - Total Penalty, Overload, Forced Dep (3장)
-  3_sac_vs_maac_scen/    : SAC vs MAAC, 시나리오별(S1~S10)
-                           - Total Penalty, Overload, Forced Dep (3장)
-  4_maac_vs_cmdp_s1/     : MAAC vs C-MAAC, S1
-                           - Total Penalty, Overload, Forced Dep (3장)
-  5_maac_vs_cmdp_scen/   : MAAC vs C-MAAC, 시나리오별(S1~S10)
-                           - Total Penalty, Overload, Forced Dep (3장)
-
-사용법:
-  python eval_full_compare.py \
-      --maac_dirs models/ev_charging/maac_v2_s1/run1 \
-                  models/ev_charging/maac_v2_s2/run1 \
-                  models/ev_charging/maac_v2_s3/run1 \
-      --sac_dirs  models/ev_charging/sac_v1_s1/run1 \
-                  models/ev_charging/sac_v1_s2/run1 \
-                  models/ev_charging/sac_v1_s3/run1 \
-      --cmdp_dirs models/ev_charging/cmdp_v9_s1/run1 \
-                  models/ev_charging/cmdp_v9_s2/run1 \
-                  models/ev_charging/cmdp_v9_s3/run1 \
-      --n_seeds 50 --out_dir full_compare
-"""
+"""Random / Heuristic / SAC / MAAC / C-MAAC 종합 비교 평가."""
 
 import sys, io, os, argparse
 import numpy as np
@@ -311,14 +282,13 @@ def aggregate(results):
     return out
 
 
-# ── 단일 막대(모델 N개) 그래프 헬퍼 ───────────────────────────────────────
-# 알고리즘별 고유 색상 (bar/face, error-bar/edge, text) — 모든 그래프에서 통일
+# 알고리즘별 색상 (face, edge, text)
 PALETTE = {
-    'Random':    ('#b0bec5', '#78909c', '#37474f'),  # 회색
-    'Heuristic': ('#b0bec5', '#78909c', '#37474f'),  # 회색 (Random과 동일)
-    'SAC':       ('#b0bec5', '#78909c', '#37474f'),  # 회색 (Random/Heuristic과 동일)
-    'MAAC':      ('#90caf9', '#42a5f5', '#1565c0'),  # 파스텔 블루
-    'C-MAAC':    ('#ef9a9a', '#e57373', '#c62828'),  # 코랄 (강조)
+    'Random':    ('#b0bec5', '#78909c', '#37474f'),
+    'Heuristic': ('#b0bec5', '#78909c', '#37474f'),
+    'SAC':       ('#b0bec5', '#78909c', '#37474f'),
+    'MAAC':      ('#90caf9', '#42a5f5', '#1565c0'),
+    'C-MAAC':    ('#ef9a9a', '#e57373', '#c62828'),
 }
 
 
@@ -494,7 +464,6 @@ def _compute_smooth(steps, stacked, window):
     return sm_steps, sm_mean, sm_std
 
 
-# 학습 곡선도 PALETTE의 (face, txt) 색상을 그대로 사용해 색상 통일
 TRAIN_CURVE_STYLES = {
     name: dict(color=face, txt_color=txt)
     for name, (face, _, txt) in PALETTE.items()
@@ -562,9 +531,7 @@ def main(args):
     S1 = SCENARIOS[0]
     subtitle_s1 = f'normal_10, 500kW, 10 docks  |  n_seeds={args.n_seeds}'
 
-    # ════════════════════════════════════════════════════════════════════
     # 0) Training Curves — SAC / MAAC / C-MAAC
-    # ════════════════════════════════════════════════════════════════════
     print('\n' + '='*60)
     print('  [0] Training Curves')
     print('='*60)
@@ -575,9 +542,7 @@ def main(args):
                           args.sac_n_agents, d0 / 'training_curves_all.png',
                           window=args.smooth)
 
-    # ════════════════════════════════════════════════════════════════════
     # 1) Random / Heuristic / SAC / MAAC / C-MAAC  @ S1
-    # ════════════════════════════════════════════════════════════════════
     print('\n' + '='*60)
     print('  [1] Baseline 5-way comparison @ S1')
     print('='*60)
@@ -655,9 +620,7 @@ def main(args):
                            'Forced Departures', 'Count (lower=better)',
                            d1 / '9_forced_departures.png', subtitle_s1, ylim_max=shared_top)
 
-    # ════════════════════════════════════════════════════════════════════
     # 2) SAC vs MAAC @ S1  /  3) SAC vs MAAC scenarios
-    # ════════════════════════════════════════════════════════════════════
     if sac_models:
         print('\n' + '='*60)
         print('  [2,3] SAC vs MAAC')
@@ -769,9 +732,7 @@ def main(args):
         plot_scenario_bar(names, labels, fd_A, fd_A_s, fd_B, fd_B_s, 'SAC', 'MAAC',
                           fd_title + ' by Scenario', fd_ylabel, d3 / fd_fname, sub_scen, ylim_max=shared_top)
 
-    # ════════════════════════════════════════════════════════════════════
     # 4) MAAC vs C-MAAC @ S1  /  5) MAAC vs C-MAAC scenarios
-    # ════════════════════════════════════════════════════════════════════
     if cmdp_models:
         print('\n' + '='*60)
         print('  [4,5] MAAC vs C-MAAC')

@@ -1,9 +1,4 @@
-"""
-Random 벤치마크 알고리즘
-- 환경, 보상, 상태 전이, 행동 마스킹 등 모든 것이 MAAC와 동일
-- 액션 선택만 무작위 (학습 없음)
-- 여러 에피소드를 실행하여 평균 성능을 측정
-"""
+"""Random 정책 베이스라인 (액션을 균등 분포로 샘플링, 학습 없음)."""
 import sys
 import io
 import os
@@ -30,12 +25,9 @@ def run_random_benchmark(config):
     env.seed(config.seed)
     np_random = np.random.RandomState(config.seed)
 
-    # 결과 저장 디렉토리
     save_dir = f'models/ev_charging/benchmark_random/{config.arrival_mode}_seed{config.seed}'
     os.makedirs(save_dir, exist_ok=True)
 
-    # CSV 로그 초기화
-    # 각 충전기별로 페널티 기록할 csv 파일 만드는 작업
     csv_path = os.path.join(save_dir, 'penalty_log.csv')
     penalty_keys = ['charging_cost', 'dissatisfaction', 'undercharge',
                     'overload', 'waiting', 'overtime']
@@ -49,7 +41,6 @@ def run_random_benchmark(config):
         header.append('mean_reward')
         writer.writerow(header)
 
-    # 에피소드 실행
     all_rewards = []
     all_penalties = {key: [] for key in penalty_keys}
     start_time = time.time()
@@ -59,16 +50,13 @@ def run_random_benchmark(config):
         ep_reward = np.zeros(env.num_docks)
 
         for step in range(EPISODE_LENGTH):
-            # 핵심: 액션을 무작위로 선택 (0~9 중 랜덤)
             actions = [np_random.randint(0, NUM_ACTIONS) for _ in range(env.num_docks)]
             obs, rewards, dones, infos = env.step(actions)
             ep_reward += rewards
 
-        # 에피소드 결과 기록
         mean_reward = np.mean(ep_reward)
         all_rewards.append(mean_reward)
 
-        # 페널티 집계
         ep_penalty_totals = {key: 0.0 for key in penalty_keys}
         row = [ep + 1]
         for a_i in range(env.num_docks):
@@ -85,7 +73,6 @@ def run_random_benchmark(config):
         for key in penalty_keys:
             all_penalties[key].append(ep_penalty_totals[key] / env.num_docks)
 
-        # 진행 상황 출력
         if (ep + 1) % config.print_interval == 0 or ep == config.n_episodes - 1:
             elapsed = time.time() - start_time
             recent = all_rewards[-min(50, len(all_rewards)):]
@@ -94,7 +81,6 @@ def run_random_benchmark(config):
                   f"Avg(50): {np.mean(recent):10.1f} | "
                   f"Time: {elapsed:.0f}s", flush=True)
 
-    # 최종 결과 요약
     elapsed = time.time() - start_time
     print()
     print("=" * 60)
@@ -113,7 +99,6 @@ def run_random_benchmark(config):
     print(f"  Time: {elapsed:.1f}s")
     print(f"  CSV saved: {csv_path}")
 
-    # 요약 통계 저장
     summary_path = os.path.join(save_dir, 'summary.txt')
     with open(summary_path, 'w', encoding='utf-8') as f:
         f.write(f"Random Benchmark Summary\n")

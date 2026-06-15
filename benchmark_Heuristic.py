@@ -1,18 +1,10 @@
 """
-Heuristic 벤치마크 알고리즘
-- 환경, 보상, 상태 전이, 행동 마스킹 등 모든 것이 MAAC와 동일
-- 액션 선택만 긴급도 + 전기 요금 기반 규칙 (학습 없음)
+Heuristic 베이스라인 (긴급도 + 전기 요금 기반 규칙, 학습 없음).
 
 규칙 (우선순위):
-  1순위 - 긴급 충전: 마감 임박 + SoC 부족 → 최대 전력 (90kW)
-  2순위 - 마무리 충전: SoC가 목표에 거의 도달 → 최소 전력 (10kW)
-  3순위 - 요금 기반:
-    경부하 (79.2원, 22:00~08:00)    → 90kW
-    중간부하 (137.4원)               → 50kW
-    최대부하 (190.4원, 11~12,13~18) → 10kW
-
-  → 환경의 action masking이 빈 도크, 충전 완료+적재 중 등을
-    자동으로 0kW로 강제하므로 별도 예외 처리 불필요
+  1. 마감 임박 + SoC 부족   → 90kW (긴급)
+  2. SoC 목표 5% 이내       → 10kW (마무리)
+  3. 경부하/중간부하/최대부하 → 90 / 50 / 10 kW
 """
 import sys
 import io
@@ -32,51 +24,34 @@ from envs.ev_charging.price_schedule import get_price_schedule
 
 
 def urgency_price_action(dock, price):
-    """
-    긴급도 + 전기 요금에 따라 충전 전력(액션 인덱스)을 결정하는 규칙
-
-    ACTION_KW = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90] kW
-    인덱스:       0   1   2   3   4   5   6   7   8   9
-
-    인자:
-        dock: 도크 상태 dict
-        price: 현재 전기 요금 (원/kWh)
-    반환:
-        int: 액션 인덱스 (0~9)
-    """
-    # 빈 도크는 환경이 action masking으로 처리하지만, 여기서도 0 반환
+    """ACTION_KW = [0, 10, ..., 90] kW. 반환: 액션 인덱스 0~9."""
     if dock['connected'] == 0:
         return 0
 
     soc = dock['soc']
     target = dock['target_soc']
     remain = dock['departure_remain']
-    soc_gap = target - soc  # 남은 충전량 (0~1)
+    soc_gap = target - soc
 
-    # --- 1순위: 긴급 충전 ---
-    # 남은 시간 대비 충전이 부족한 경우 최대 전력
-    # 필요 에너지(kWh) = soc_gap × battery_cap
-    # 필요 시간(스텝) = 필요 에너지 / (max_power × DELTA_T)
+    # 1. 긴급 충전: 남은 시간이 필요 시간의 1.5배 이하면 최대 출력
     if soc_gap > 0 and dock['battery_cap'] > 0:
         max_power = min(dock['charger_max_kw'], dock['ev_max_kw'])
         if max_power > 0:
             needed_steps = (soc_gap * dock['battery_cap']) / (max_power * DELTA_T)
-            # 남은 시간이 필요 시간의 1.5배 이하면 긴급
             if remain <= needed_steps * 1.5:
-                return 9  # 90kW
+                return 9
 
-    # --- 2순위: 충전 거의 완료 ---
-    # 목표까지 5% 이하 남았으면 최소 전력으로 마무리
+    # 2. 마무리 충전: 목표 5% 이내
     if soc_gap <= 0.05:
-        return 1  # 10kW
+        return 1
 
-    # --- 3순위: 요금 기반 ---
-    if price <= 79.2:       # 경부하
-        return 9            # 90kW
-    elif price <= 137.4:    # 중간부하
-        return 5            # 50kW
-    else:                   # 최대부하
-        return 1            # 10kW
+    # 3. 요금대별
+    if price <= 79.2:
+        return 9
+    elif price <= 137.4:
+        return 5
+    else:
+        return 1
 
 
 def run_urgency_price_benchmark(config):
@@ -99,11 +74,9 @@ def run_urgency_price_benchmark(config):
 
     price_schedule = get_price_schedule()
 
-    # 결과 저장 디렉토리
     save_dir = f'models/ev_charging/benchmark_Heuristic/{config.arrival_mode}_seed{config.seed}'
     os.makedirs(save_dir, exist_ok=True)
 
-    # CSV 로그 초기화
     csv_path = os.path.join(save_dir, 'penalty_log.csv')
     penalty_keys = ['charging_cost', 'dissatisfaction', 'undercharge',
                     'overload', 'waiting', 'overtime']
@@ -117,7 +90,6 @@ def run_urgency_price_benchmark(config):
         header.append('mean_reward')
         writer.writerow(header)
 
-    # 에피소드 실행
     all_rewards = []
     all_penalties = {key: [] for key in penalty_keys}
     start_time = time.time()
@@ -130,7 +102,6 @@ def run_urgency_price_benchmark(config):
             step_idx = min(step, EPISODE_LENGTH - 1)
             current_price = price_schedule[step_idx]
 
-            # 핵심: 각 도크의 상태를 보고 개별적으로 액션 결정
             actions = []
             for i in range(env.num_docks):
                 action_idx = urgency_price_action(env.dock_states[i], current_price)
@@ -139,11 +110,9 @@ def run_urgency_price_benchmark(config):
             obs, rewards, dones, infos = env.step(actions)
             ep_reward += rewards
 
-        # 에피소드 결과 기록
         mean_reward = np.mean(ep_reward)
         all_rewards.append(mean_reward)
 
-        # 페널티 집계
         ep_penalty_totals = {key: 0.0 for key in penalty_keys}
         row = [ep + 1]
         for a_i in range(env.num_docks):
@@ -160,7 +129,6 @@ def run_urgency_price_benchmark(config):
         for key in penalty_keys:
             all_penalties[key].append(ep_penalty_totals[key] / env.num_docks)
 
-        # 진행 상황 출력
         if (ep + 1) % config.print_interval == 0 or ep == config.n_episodes - 1:
             elapsed = time.time() - start_time
             recent = all_rewards[-min(50, len(all_rewards)):]
@@ -169,7 +137,6 @@ def run_urgency_price_benchmark(config):
                   f"Avg(50): {np.mean(recent):10.1f} | "
                   f"Time: {elapsed:.0f}s", flush=True)
 
-    # 최종 결과 요약
     elapsed = time.time() - start_time
     print()
     print("=" * 60)
@@ -188,7 +155,6 @@ def run_urgency_price_benchmark(config):
     print(f"  Time: {elapsed:.1f}s")
     print(f"  CSV saved: {csv_path}")
 
-    # 요약 통계 저장
     summary_path = os.path.join(save_dir, 'summary.txt')
     with open(summary_path, 'w', encoding='utf-8') as f:
         f.write(f"Heuristic Benchmark Summary\n")

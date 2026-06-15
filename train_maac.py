@@ -1,13 +1,4 @@
-"""
-EV 충전 MAAC 학습 + 시각화 통합 실행 스크립트
-
-사용법:
-  python train.py                        # 기본 설정으로 학습
-  python train.py --n_episodes 5000      # 에피소드 수 변경
-  python train.py --use_gpu              # GPU 사용
-
-학습 완료 후 자동으로 시각화 그래프가 생성됩니다.
-"""
+"""EV 충전 MAAC 학습 스크립트"""
 import sys
 import io
 import os
@@ -32,7 +23,6 @@ def format_time(seconds):
 
 
 def train(config):
-    """MAAC 학습 실행 (main.py의 run() 함수를 직접 호출)"""
     import torch
     import numpy as np
     from pathlib import Path
@@ -40,14 +30,11 @@ def train(config):
     from tensorboardX import SummaryWriter
     from gym.spaces import Box, Discrete
 
-    from utils.make_env import make_env               # 환경 생성용
-    from utils.buffer import ReplayBuffer             # 경험 데이터 저장용
-    from utils.env_wrappers import DummyVecEnv        # 환경 래퍼용
-    from algorithms.attention_sac import AttentionSAC # 모델 학습용
+    from utils.make_env import make_env
+    from utils.buffer import ReplayBuffer
+    from utils.env_wrappers import DummyVecEnv
+    from algorithms.attention_sac import AttentionSAC
 
-    # ============================================================
-    # 1. 환경 생성
-    # ============================================================
     print("=" * 60)
     print("  EV Charging MAAC Training")
     print("=" * 60)
@@ -59,7 +46,6 @@ def train(config):
     print(f"  Arrival mode:   {config.arrival_mode}")
     print()
 
-    # 환경 생성 함수를 반환하는 함수
     def get_env_fn(seed):
         def init_env():
             env = make_env('ev_charging', discrete_action=True,
@@ -67,13 +53,9 @@ def train(config):
             env.seed(seed)
             return env
         return init_env
-    
-    # 환경을 만드는 함수
+
     env = DummyVecEnv([get_env_fn(config.seed)])
 
-    # ============================================================
-    # 2. 모델 저장 디렉토리
-    # ============================================================
     model_dir = Path('./models') / 'ev_charging' / config.model_name
     if not model_dir.exists():
         run_num = 1
@@ -91,9 +73,6 @@ def train(config):
 
     logger = SummaryWriter(str(log_dir))
 
-    # ============================================================
-    # 3. 모델 및 버퍼 초기화
-    # ============================================================
     torch.manual_seed(config.seed)
     np.random.seed(config.seed)
 
@@ -121,9 +100,6 @@ def train(config):
     print(f"  Action dim: {env.action_space[0].n}")
     print()
 
-    # ============================================================
-    # 4. 학습 루프
-    # ============================================================
     t = 0
     start_time = time.time()
     best_reward = -float('inf')
@@ -152,7 +128,6 @@ def train(config):
             t += 1
             ep_reward += rewards[0]
 
-            # 모델 업데이트
             if (len(replay_buffer) >= config.batch_size and
                     (t % config.steps_per_update) == 0):
                 if config.use_gpu:
@@ -162,7 +137,7 @@ def train(config):
                 for _ in range(config.num_updates):
                     sample = replay_buffer.sample(config.batch_size,
                                                   to_gpu=config.use_gpu)
-                    # logger=None → 에피소드 단위로 직접 로깅 (x축 ep_i 통일)
+                    # 에피소드 단위로 직접 로깅하므로 logger=None
                     q_loss = model.update_critic(sample, logger=None)
                     pol_loss = model.update_policies(sample, logger=None)
                     model.update_all_targets()
@@ -172,7 +147,6 @@ def train(config):
                             ep_pol_losses[a_i].append(pl)
                 model.prep_rollouts(device='cpu')
 
-        # loss 기록
         all_rewards.append(np.mean(ep_reward))
         if ep_q_losses:
             all_q_losses.append(np.mean(ep_q_losses))
@@ -180,7 +154,6 @@ def train(config):
             if ep_pol_losses[a_i]:
                 all_pol_losses[a_i].append(np.mean(ep_pol_losses[a_i]))
 
-        # 에피소드 단위 로깅 (x축 ep_i 기준으로 통일)
         mean_ep_reward = np.mean(ep_reward)
         for a_i in range(model.nagents):
             logger.add_scalar(f'agent{a_i}/mean_episode_rewards',
@@ -193,7 +166,7 @@ def train(config):
                 logger.add_scalar(f'agent{a_i}/losses/pol_loss',
                                   np.mean(ep_pol_losses[a_i]), ep_i)
 
-        # policy entropy 로깅 (에피소드 마지막 obs 기준)
+        # 에피소드 마지막 obs 기준 policy entropy
         with torch.no_grad():
             for a_i in range(model.nagents):
                 ob = Variable(torch.Tensor(obs[0, a_i]).unsqueeze(0),
@@ -203,13 +176,11 @@ def train(config):
                     regularize=True, return_entropy=True)
                 logger.add_scalar(f'agent{a_i}/policy_entropy', ent, ep_i)
 
-        # Best 모델 저장
         if mean_ep_reward > best_reward:
             best_reward = mean_ep_reward
             model.prep_rollouts(device='cpu')
             model.save(run_dir / 'model_best.pt')
 
-        # 진행 상황 출력
         elapsed = time.time() - start_time
         if ep_i % config.print_interval == 0 or ep_i == config.n_episodes - 1:
             eta = elapsed / (ep_i + 1) * (config.n_episodes - ep_i - 1)
@@ -219,14 +190,12 @@ def train(config):
                   f"Time: {format_time(elapsed)} | "
                   f"ETA: {format_time(eta)}", flush=True)
 
-        # 모델 체크포인트 저장
         if (ep_i + 1) % config.save_interval == 0:
             model.prep_rollouts(device='cpu')
             os.makedirs(run_dir / 'incremental', exist_ok=True)
             model.save(run_dir / 'incremental' / f'model_ep{ep_i+1}.pt')
             model.save(run_dir / 'model.pt')
 
-    # 최종 저장
     model.prep_rollouts(device='cpu')
     model.save(run_dir / 'model.pt')
     env.close()

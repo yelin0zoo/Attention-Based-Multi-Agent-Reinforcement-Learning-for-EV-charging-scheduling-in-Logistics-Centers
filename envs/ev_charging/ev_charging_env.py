@@ -26,15 +26,15 @@ GRID_LIMIT_KW = 500.0         # 전력 상한 (kW, 10도크 기준: 10 × 50kW)
 NUM_ACTIONS = 10              # {0, 10, 20, ..., 90} kW
 ACTION_KW = [float(i * 10) for i in range(NUM_ACTIONS)]
 
-# Reward 계수 - 변경, 추가 필요
+# Reward 계수
 KAPPA = -20000.0              # 부족 충전 페널티 (출발 시 1회)
 P_OVERTIME = 15000.0          # 초과 체류 페널티 계수
-P_WAIT = 15000.0             # 대기 페널티 계수
+P_WAIT = 15000.0              # 대기 페널티 계수
 P_OVERLOAD = 285.6            # 과부하 페널티 계수 (KEPCO 최대부하 190.4원/kWh × 1.5, 제67조의3)
 
-# 기대 SoC 곡선 파라미터 - 변경 필요
-# K1: 트럭이 다음 배송 스케줄을 무사히 소화하기 위해 최종적으로 요구하는 목표 충전 비율
-# K2: EV 트럭의 마감 시간에 따른 기대 배터리 충전 수준, 즉 '마감 지연에 대한 압박(불안) 곡선'의 형태와 기울기를 조절하는 파라미터
+# 기대 SoC 곡선 파라미터
+# K1: 최종 목표 충전 비율
+# K2: 마감 지연에 대한 압박 곡선의 기울기
 K1 = 1.0
 K2 = 4.0
 
@@ -170,8 +170,7 @@ class EVChargingEnv:
             else:
                 parsed.append(int(a))
         return parsed
-    
-    # action masking
+
     def _apply_action_masking(self, i, action_kw):
         """Action Masking: 무효 액션을 0kW로 강제"""
         dock = self.dock_states[i]
