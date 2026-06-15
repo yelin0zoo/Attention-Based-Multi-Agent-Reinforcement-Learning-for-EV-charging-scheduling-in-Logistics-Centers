@@ -19,12 +19,21 @@ EV-Charging-MAAC/
 │   └── attention_sac_cmdp.py   # C-MAAC (제안 방법, CMDP + 라그랑주 완화)
 │
 ├── utils/                       # 버퍼, 정책망, 환경 래퍼 등 공통 유틸
+│   ├── agents.py
+│   ├── buffer.py
+│   ├── buffer_cmdp.py
+│   ├── critics.py
+│   ├── env_wrappers.py
+│   ├── make_env.py
+│   ├── misc.py
+│   ├── policies.py
+│   └── single_wrapper.py
 │
 ├── train_maac.py                # MAAC 학습
-├── train_cmdp.py                # C-MAAC 학습 (연속 비용 버전)
+├── train_cmdp.py                # C-MAAC 학습
 ├── train_sac.py                 # Single-Agent Discrete SAC 베이스라인 학습
 │
-├── eval_full_compare.py         # 논문 실험(V절) 종합 비교/시각화
+├── eval_full_compare.py         # 종합 비교/시각화
 ├── benchmark_random.py          # Random 정책 베이스라인
 └── benchmark_Heuristic.py        # 규칙 기반 Heuristic 베이스라인
 ```
@@ -36,27 +45,27 @@ EV-Charging-MAAC/
 - 보상: 충전비용(`charging_cost`), 불만족(`dissatisfaction`), 미충족충전(`undercharge`),
   과부하(`overload`), 대기(`waiting`), 출차지연(`overtime`) 6개 페널티 항목의 합
 - 전기요금: 한전 산업용(을) 고압 여름철 요금 적용 (`envs/ev_charging/price_schedule.py`)
-  - 경부하(22:00~08:00): 79.2원/kWh
-  - 중간부하(08:00~11:00, 12:00~13:00, 18:00~22:00): 137.4원/kWh
-  - 최대부하(11:00~12:00, 13:00~18:00): 190.4원/kWh
+  - 경부하 (22:00 ~ 08:00): 79.2원/kWh
+  - 중간부하 (08:00 ~ 11:00, 12:00 ~ 13:00, 18:00 ~ 22:00): 137.4원/kWh
+  - 최대부하 (11:00 ~ 12:00, 13:00 ~ 18:00): 190.4원/kWh
 
 ## 학습
 
 ### MAAC
 ```shell
-python train_maac.py --model_name maac_v2_s1 --seed 1 --n_episodes 30000
+python train_maac.py --model_name maac_v2_s1 --seed 1 --n_episodes 20000
 ```
 
 ### C-MAAC (제안 방법)
 ```shell
 python train_cmdp.py --model_name cmdp_v9_s1 --seed 1 \
     --arrival_mode normal_10 --n_episodes 20000 \
-    --d1 0.0 --lambda_lr 0.1
+    --d1 0.14 --lambda_lr 0.005 --lambda_max 20 --num_updates 4
 ```
 
 ### SAC (베이스라인)
 ```shell
-python train_sac.py --model_name sac_v1_s1 --seed 1 --n_episodes 30000
+python train_sac.py --model_name sac_v1_s1 --seed 1 --n_episodes 20000
 ```
 
 학습 결과는 `models/ev_charging/{model_name}/run1/` 아래에 체크포인트(`model_best.pt`, `incremental/`)와
@@ -64,7 +73,7 @@ TensorBoard 로그(`logs/`)로 저장됩니다.
 
 ## 평가 / 시각화
 
-`eval_full_compare.py`는 논문 실험(V절)에 사용된 모든 비교 그래프를 생성합니다.
+`eval_full_compare.py`는 학습된 모델들의 모든 비교 그래프를 생성합니다.
 
 ```shell
 python eval_full_compare.py \
@@ -85,7 +94,7 @@ python eval_full_compare.py \
 | 출력 폴더 | 내용 |
 |---|---|
 | `0_training_curves/` | SAC / MAAC / C-MAAC 학습 곡선 |
-| `1_baseline_s1/` | Random/Heuristic/SAC/MAAC/C-MAAC, S1 기준 — Total Penalty, 6개 페널티 항목, Overload Steps, Forced Departures (9장) |
+| `1_baseline_s1/` | Random/Heuristic/SAC/MAAC/C-MAAC, S1 기준 — Total Penalty, 6개 페널티 항목, Overload Steps, Forced Departures |
 | `2_sac_vs_maac_s1/` | SAC vs MAAC, S1 — Total Penalty, Overload, Forced Departures + 도크 완료율 |
 | `3_sac_vs_maac_scen/` | SAC vs MAAC, 시나리오별(S1~S10) |
 | `4_maac_vs_cmdp_s1/` | MAAC vs C-MAAC, S1 |
@@ -95,21 +104,3 @@ python eval_full_compare.py \
 
 본 코드는 [Iqbal & Sha, "Actor-Attention-Critic for Multi-Agent Reinforcement Learning" (ICML 2019)](https://arxiv.org/abs/1810.02912)의
 [공식 구현](https://github.com/shariqiqbal2810/MAAC)을 기반으로 작성되었습니다.
-
-```bibtex
-@InProceedings{pmlr-v97-iqbal19a,
-  title =    {Actor-Attention-Critic for Multi-Agent Reinforcement Learning},
-  author =   {Iqbal, Shariq and Sha, Fei},
-  booktitle =    {Proceedings of the 36th International Conference on Machine Learning},
-  pages =    {2961--2970},
-  year =     {2019},
-  editor =   {Chaudhuri, Kamalika and Salakhutdinov, Ruslan},
-  volume =   {97},
-  series =   {Proceedings of Machine Learning Research},
-  address =      {Long Beach, California, USA},
-  month =    {09--15 Jun},
-  publisher =    {PMLR},
-  pdf =      {http://proceedings.mlr.press/v97/iqbal19a/iqbal19a.pdf},
-  url =      {http://proceedings.mlr.press/v97/iqbal19a.html},
-}
-```
