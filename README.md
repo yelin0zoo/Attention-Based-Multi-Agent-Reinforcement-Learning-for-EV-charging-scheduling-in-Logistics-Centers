@@ -77,15 +77,15 @@ TensorBoard 로그(`logs/`)로 저장됩니다.
 
 ```shell
 python eval_full_compare.py \
-    --maac_dirs models/ev_charging/maac_v2_s1/run1 \
-                models/ev_charging/maac_v2_s2/run1 \
-                models/ev_charging/maac_v2_s3/run1 \
-    --sac_dirs  models/ev_charging/sac_v1_s1/run1 \
-                models/ev_charging/sac_v1_s2/run1 \
-                models/ev_charging/sac_v1_s3/run1 \
-    --cmdp_dirs models/ev_charging/cmdp_v9_s1/run1 \
-                models/ev_charging/cmdp_v9_s2/run1 \
-                models/ev_charging/cmdp_v9_s3/run1 \
+    --maac_dirs models/ev_charging/maac_v10_s1/run1 \
+                models/ev_charging/maac_v10_s2/run1 \
+                models/ev_charging/maac_v10_s3/run1 \
+    --sac_dirs  models/ev_charging/sac_v10_s1/run1 \
+                models/ev_charging/sac_v10_s2/run1 \
+                models/ev_charging/sac_v10_s3/run1 \
+    --cmdp_dirs models/ev_charging/cmdp_v10_s1/run1 \
+                models/ev_charging/cmdp_v10_s2/run1 \
+                models/ev_charging/cmdp_v10_s3/run1 \
     --n_seeds 50 --out_dir full_compare
 ```
 
