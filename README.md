@@ -53,19 +53,19 @@ EV-Charging-MAAC/
 
 ### MAAC
 ```shell
-python train_maac.py --model_name maac_v2_s1 --seed 1 --n_episodes 20000
+python train_maac.py --model_name maac_v10_s1 --seed 1 --n_episodes 20000
 ```
 
 ### C-MAAC (제안 방법)
 ```shell
-python train_cmdp.py --model_name cmdp_v9_s1 --seed 1 \
+python train_cmdp.py --model_name cmdp_v10_s1 --seed 1 \
     --arrival_mode normal_10 --n_episodes 20000 \
     --d1 0.14 --lambda_lr 0.005 --lambda_max 20 --num_updates 4
 ```
 
 ### SAC (베이스라인)
 ```shell
-python train_sac.py --model_name sac_v1_s1 --seed 1 --n_episodes 20000
+python train_sac.py --model_name sac_v10_s1 --seed 1 --n_episodes 20000
 ```
 
 학습 결과는 `models/ev_charging/{model_name}/run1/` 아래에 체크포인트(`model_best.pt`, `incremental/`)와
